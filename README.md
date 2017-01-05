@@ -1,2 +1,2 @@
 # Testing
-Testing code
+This repository is store the code for testing purppose
