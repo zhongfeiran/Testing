@@ -1,0 +1,84 @@
+rm(list = ls())
+  
+#ARIMA Model
+library(zoo)
+library("TTR")
+library("forecast")
+library(MASS) #stepwise selection
+library(dplyr)
+library(tidyr)
+library(stringr)
+library(magrittr)
+library(ggplot2)
+
+
+# Read in weekly ILI and Rx data
+mod1 =read.table(file = '~/ongoing_projects/er_analysis/data/mod1.csv', header = T , stringsAsFactors =F)
+
+library(doMC)
+registerDoMC(cores = 20)
+mod1 %<>% filter(zip2 != 9)
+
+
+arimas = function(i) {
+  z <- dplyr::filter(mod1, zip2 == i) %>% arrange(obs_week_end) %>% select(er_per_thous)%>%ts(frequency=52, start=c(2013))
+  z_train <- dplyr::filter(mod1, zip2 == i & obs_week_end < '2015-04-01') %>% arrange(obs_week_end) %>% 
+    select(er_per_thous) %>%ts(frequency=52, start=c(2013))
+  xregdat <- mod1 %>% dplyr::filter(zip2 == i) %>% arrange(service_week_end) %>% select(predict_er, med_hh_income_14)
+  xregdat_train <- mod1 %>% dplyr::filter(zip2 == i & obs_week_end < '2015-04-01') %>% arrange(service_week_end) %>% select(predict_er, med_hh_income_14)
+  a =auto.arima(z, xreg = xregdat)
+  p= a$arma[1]
+  d= a$arma[2]
+  q= a$arma[3]
+  g = arima(z_train, order = c(p, d, q), xreg = xregdat_train)
+  p = predict(g, newxreg=xregdat)$pred%>% as.vector
+  return(p)
+}
+# Grab optimized lambda from CV method
+pred <- foreach(i = c(1:8,10:99)) %dopar% arimas(i)
+mod1$arima = unlist(pred)
+
+mod1 %>% group_by (set)  %>% mutate( x =er_per_thous- mean(er_per_thous)) %>% ungroup %>%
+  mutate( se = (er_per_thous- arima)^2,
+          ae = abs(er_per_thous- arima),
+          error = (er_per_thous- arima)) %>%
+  group_by (set) %>%
+  summarise( er_per_thous_mean = mean(er_per_thous),
+             r_square = 1- sum((er_per_thous- arima)^2)/sum(x^2),
+             mses= mean(se), 
+             maes= mean(ae), 
+             max_under = max(error),
+             avg_under = mean(ifelse(error >0, error, NA ), na.rm =T),
+             max_over = max(error*(-1)),
+             avg_over = mean(ifelse(error < 0, error*(-1), NA ), na.rm =T))
+
+mod1 %>% filter( set == 'train') %>%
+  ggplot(aes(er_per_thous, arima)) +geom_point(aes(colour = factor(year)), size = 2) +
+  geom_abline(slope =1)
+
+mod1 %>% filter( set == 'test') %>%
+  ggplot(aes(er_per_thous, arima)) +geom_point(aes(colour = factor(year)), size = 2) +
+  geom_abline(slope =1) +ylim(0,0.6)
+
+###
+mod1 %<>% group_by( year) %>% mutate( predict_er_mr_mean = mean(predict_er_mr), sd = sd(predict_er_mr)) %>%
+  ungroup %>% mutate(predict_er_mr_norm = (predict_er_mr - predict_er_mr_mean)/ sd)
+
+arimas_norm = function(i) {
+  z <- dplyr::filter(mod1, zip2 == i) %>% arrange(obs_week_end) %>% select(er_per_thous)%>%ts(frequency=52, start=c(2013))
+  z_train <- dplyr::filter(mod1, zip2 == i & obs_week_end < '2015-04-01') %>% arrange(obs_week_end) %>% 
+    select(er_per_thous) %>%ts(frequency=52, start=c(2013))
+  xregdat <- mod1 %>% dplyr::filter(zip2 == i) %>% arrange(service_week_end) %>% select(predict_er_mr_mean, med_hh_income_14)
+  xregdat_train <- mod1 %>% dplyr::filter(zip2 == i & obs_week_end < '2015-04-01') %>% arrange(service_week_end) %>% select(predict_er_mr_mean, med_hh_income_14)
+  a =auto.arima(z, xreg = xregdat)
+  p= a$arma[1]
+  d= a$arma[2]
+  q= a$arma[3]
+  g = arima(z_train, order = c(p, d, q), xreg = xregdat_train)
+  p = predict(g, newxreg=xregdat)$pred%>% as.vector
+  return(p)
+}
+
+
+
+
